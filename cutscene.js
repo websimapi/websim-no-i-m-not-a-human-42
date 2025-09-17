@@ -73,6 +73,7 @@ let autoSkipTimeout = null;
 let zoomRafId = null;
 let isTransitioning = false;
 let csElement = null;
+let preloadedImages = [];
 
 const skipCurrentScene = () => {
   if (currentSceneIndex < scenes.length - 1) {
@@ -114,38 +115,59 @@ async function transitionToScene(sceneIndex) {
   currentSceneIndex = sceneIndex;
   const scene = scenes[currentSceneIndex];
   
-  const loading = csElement.querySelector('.cutscene-loading');
-  loading.style.display = 'grid';
-  
-  const img = new Image();
-  img.alt = `Cutscene scene ${currentSceneIndex + 1}`;
-  img.onload = () => {
-    loading.style.display = 'none';
-    posterizeInstance = applyPosterizeToImage(canvas, img, 5.0, 0.12);
-
-    requestAnimationFrame(() => {
-      canvas.classList.add('reveal');
-      if (scene.fadeInClass) canvas.classList.add(scene.fadeInClass);
-      if (scene.animationClass) canvas.classList.add(scene.animationClass);
-      
-      if (scene.onStart) {
-        scene.onStart(csElement, canvas);
-      }
-
-      if (currentSceneIndex < scenes.length - 1) {
-        autoSkipTimeout = setTimeout(skipCurrentScene, scene.duration);
-        csElement.addEventListener('click', skipCurrentScene, { once: true });
-      }
+  const img = preloadedImages[currentSceneIndex];
+  if (!img) {
+      console.error(`Scene ${currentSceneIndex + 1} image not preloaded.`);
       isTransitioning = false;
+      return;
+  }
+
+  posterizeInstance = applyPosterizeToImage(canvas, img, 5.0, 0.12);
+
+  requestAnimationFrame(() => {
+    canvas.classList.add('reveal');
+    if (scene.fadeInClass) canvas.classList.add(scene.fadeInClass);
+    if (scene.animationClass) canvas.classList.add(scene.animationClass);
+    
+    if (scene.onStart) {
+      scene.onStart(csElement, canvas);
+    }
+
+    if (currentSceneIndex < scenes.length - 1) {
+      autoSkipTimeout = setTimeout(skipCurrentScene, scene.duration);
+      csElement.addEventListener('click', skipCurrentScene, { once: true });
+    }
+    isTransitioning = false;
+  });
+}
+
+async function preloadCutsceneAssets() {
+  const promises = scenes.map(scene => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = (err) => reject(`Failed to load ${scene.image}: ${err}`);
+      img.src = scene.image;
     });
-  };
-  img.src = scene.image;
+  });
+  return Promise.all(promises);
 }
 
 export async function startCutscene(){
   csElement = document.getElementById('cutscene');
-  const canvas = document.getElementById('cutscene-canvas');
+  const loading = csElement.querySelector('.cutscene-loading');
   csElement.style.display = 'flex';
+  loading.style.display = 'grid';
+  
+  try {
+    preloadedImages = await preloadCutsceneAssets();
+  } catch (error) {
+    console.error("Failed to preload cutscene assets:", error);
+    loading.style.display = 'none'; // Hide loader on error too
+    // Maybe show an error message to the user
+    return;
+  }
+  loading.style.display = 'none';
   
   const bg = getBackgroundAudio();
   if (bg) { try { bg.pause(); } catch(e){} }
