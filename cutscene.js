@@ -88,20 +88,35 @@ async function transitionToScene(sceneIndex) {
   const canvas = document.getElementById('cutscene-canvas');
   csElement.removeEventListener('click', skipCurrentScene);
   if (autoSkipTimeout) clearTimeout(autoSkipTimeout);
-  if (zoomRafId) {
-    cancelAnimationFrame(zoomRafId);
-    zoomRafId = null;
-  }
+  
+  const isExitingScene2 = currentSceneIndex === 1;
 
-  // Run cleanup for the outgoing scene
-  if (currentSceneIndex >= 0 && scenes[currentSceneIndex].onEnd) {
-    scenes[currentSceneIndex].onEnd();
+  // For scenes other than scene 2, stop animations before fading.
+  if (!isExitingScene2) {
+    if (zoomRafId) {
+        cancelAnimationFrame(zoomRafId);
+        zoomRafId = null;
+    }
+    if (currentSceneIndex >= 0 && scenes[currentSceneIndex].onEnd) {
+        scenes[currentSceneIndex].onEnd();
+    }
   }
   
-  // Fade out
-  canvas.className = ''; // Clear all classes
+  // Fade out current scene. For scene 2, zoom continues during this fade.
+  canvas.className = ''; // Clear all classes to trigger fade-out
   await new Promise(r => setTimeout(r, 2000));
   
+  // Now that the screen is black, stop scene 2's zoom and run its cleanup.
+  if (isExitingScene2) {
+    if (zoomRafId) {
+        cancelAnimationFrame(zoomRafId);
+        zoomRafId = null;
+    }
+    if (currentSceneIndex >= 0 && scenes[currentSceneIndex].onEnd) {
+        scenes[currentSceneIndex].onEnd();
+    }
+  }
+
   const flockContainer = document.getElementById('bird-flock');
   if (flockContainer && currentSceneIndex === 0) {
       flockContainer.innerHTML = '';
