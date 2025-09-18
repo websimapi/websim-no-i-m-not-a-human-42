@@ -1,6 +1,7 @@
 import { applyPosterizeToImage } from './posterize.js';
-import { audioCtx, getBackgroundAudio } from './audio.js';
+import { audioCtx, getBackgroundAudio, playGateCreak, startGateLongCreak, stopGateLongCreak, playGateThud, playGateStuck, playGateFrameClank } from './audio.js';
 import { animateBirds, stopBirds } from './birds.js';
+import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.0.0';
 
 const scenes = [
   { // Scene 1: Landscape with birds
@@ -53,15 +54,14 @@ const scenes = [
       if (canvasWrapper) canvasWrapper.style.transform = `scale(1)`;
     }
   },
-  { // Scene 3: The Green Gate
+  { // Scene 3: The Green Gate (Animated GIF)
     image: 'cutscene_gate.png',
+    gif: 'animated.gif',
     duration: 18000, // Longer, more pensive scene
     animationClass: 'gate-zoom',
-    onStart: (cs, canvas) => {
-      // For now, it's just a CSS zoom. We can add shader effects here.
-      if (posterizeInstance) posterizeInstance.setFogCoverage(0.0); // No fog
-    },
+    onStart: () => { if (posterizeInstance) posterizeInstance.setFogCoverage(0.5); startGateLongCreak(0.6); },
     onEnd: () => {
+      stopGateLongCreak(1.2);
       // This is the last scene for now. It could fade to black or loop.
     }
   }
@@ -73,7 +73,9 @@ let autoSkipTimeout = null;
 let zoomRafId = null;
 let isTransitioning = false;
 let csElement = null;
-let preloadedImages = [];
+let preloadedAssets = [];
+let slideshowTimer = null;
+let gateFrameClickHandler = null;
 
 const skipCurrentScene = () => {
   if (currentSceneIndex < scenes.length - 1) {
@@ -86,8 +88,11 @@ async function transitionToScene(sceneIndex) {
   isTransitioning = true;
 
   const canvas = document.getElementById('cutscene-canvas');
+  const gifWrapper = document.getElementById('cutscene-gif-wrapper');
   csElement.removeEventListener('click', skipCurrentScene);
   if (autoSkipTimeout) clearTimeout(autoSkipTimeout);
+  // remove previous scene-3 click advance handler if any
+  if (gateFrameClickHandler) { csElement.removeEventListener('click', gateFrameClickHandler); gateFrameClickHandler = null; }
   
   const isExitingScene2 = currentSceneIndex === 1;
 
@@ -104,6 +109,9 @@ async function transitionToScene(sceneIndex) {
   
   // Fade out current scene. For scene 2, zoom continues during this fade.
   canvas.className = ''; // Clear all classes to trigger fade-out
+  if (gifWrapper) gifWrapper.className = '';
+  if (slideshowTimer) { clearTimeout(slideshowTimer); slideshowTimer=null; }
+
   await new Promise(r => setTimeout(r, 2000));
   
   // Now that the screen is black, stop scene 2's zoom and run its cleanup.
@@ -117,6 +125,8 @@ async function transitionToScene(sceneIndex) {
     }
   }
 
+  if (gifWrapper) gifWrapper.innerHTML = '';
+
   const flockContainer = document.getElementById('bird-flock');
   if (flockContainer && currentSceneIndex === 0) {
       flockContainer.innerHTML = '';
@@ -129,44 +139,100 @@ async function transitionToScene(sceneIndex) {
   
   currentSceneIndex = sceneIndex;
   const scene = scenes[currentSceneIndex];
-  
-  const img = preloadedImages[currentSceneIndex];
-  if (!img) {
-      console.error(`Scene ${currentSceneIndex + 1} image not preloaded.`);
+  const sceneAssets = preloadedAssets[currentSceneIndex];
+
+  if (!sceneAssets || !sceneAssets.img) {
+      console.error(`Scene ${currentSceneIndex + 1} assets not preloaded.`);
       isTransitioning = false;
       return;
   }
+  
+  if (scene.gif && sceneAssets.frames) {
+    canvas.style.display = 'block';
+    posterizeInstance = applyPosterizeToImage(canvas, sceneAssets.frames[0], 5.0, 0.12);
+    const wrapper = document.getElementById('cutscene-canvas-wrapper');
+    if (scene.animationClass && wrapper) wrapper.classList.add(scene.animationClass);
+    let idx = 0;
+    const maxFrames = 3; // As per instruction, stop at the 3rd frame (index 2)
 
-  posterizeInstance = applyPosterizeToImage(canvas, img, 5.0, 0.12);
+    const playFrame = () => {
+      if (currentSceneIndex !== sceneIndex) return;
+      idx++;
+      if (idx < maxFrames && idx < sceneAssets.frames.length) {
+        posterizeInstance.setImage(sceneAssets.frames[idx]);
+        playGateFrameClank(1.0);
+        const delay = sceneAssets.delays[idx] || 100;
+        slideshowTimer = setTimeout(playFrame, delay);
+      } else {
+        // We've reached the last frame, stop audio.
+        stopGateLongCreak(0.5); // Quicker fade out as the gate stops moving
+        if (autoSkipTimeout) clearTimeout(autoSkipTimeout); // also cancel the scene skip timeout
+        if (gateFrameClickHandler) { csElement.removeEventListener('click', gateFrameClickHandler); gateFrameClickHandler = null; }
+      }
+    };
 
-  requestAnimationFrame(() => {
-    canvas.classList.add('reveal');
-    if (scene.fadeInClass) canvas.classList.add(scene.fadeInClass);
-    if (scene.animationClass) canvas.classList.add(scene.animationClass);
+    // allow user click to advance to next frame immediately
+    gateFrameClickHandler = () => { if (slideshowTimer) { clearTimeout(slideshowTimer); slideshowTimer = null; } playFrame(); };
+    csElement.addEventListener('click', gateFrameClickHandler);
     
-    if (scene.onStart) {
-      scene.onStart(csElement, canvas);
-    }
+    requestAnimationFrame(()=>{ canvas.classList.add('reveal'); if(scene.onStart) scene.onStart(csElement, canvas);
+      slideshowTimer = setTimeout(playFrame, sceneAssets.delays[0]||100);
+      if (currentSceneIndex < scenes.length - 1) { autoSkipTimeout = setTimeout(skipCurrentScene, scene.duration); csElement.addEventListener('click', skipCurrentScene, { once:true }); }
+      isTransitioning=false;
+    });
+  } else {
+    // --- Canvas Scene Logic ---
+    canvas.style.display = 'block';
+    posterizeInstance = applyPosterizeToImage(canvas, sceneAssets.img, 5.0, 0.12);
 
-    if (currentSceneIndex < scenes.length - 1) {
-      autoSkipTimeout = setTimeout(skipCurrentScene, scene.duration);
-      csElement.addEventListener('click', skipCurrentScene, { once: true });
-    }
-    isTransitioning = false;
-  });
+    requestAnimationFrame(() => {
+        canvas.classList.add('reveal');
+        if (scene.fadeInClass) canvas.classList.add(scene.fadeInClass);
+        if (scene.animationClass) canvas.classList.add(scene.animationClass);
+        
+        if (scene.onStart) scene.onStart(csElement, canvas);
+
+        if (currentSceneIndex < scenes.length - 1) {
+            autoSkipTimeout = setTimeout(skipCurrentScene, scene.duration);
+            csElement.addEventListener('click', skipCurrentScene, { once: true });
+        }
+        isTransitioning = false;
+    });
+  }
 }
 
 async function preloadCutsceneAssets() {
   const promises = scenes.map(scene => {
-    return new Promise((resolve, reject) => {
+    const imagePromise = new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
       img.onerror = (err) => reject(`Failed to load ${scene.image}: ${err}`);
       img.src = scene.image;
     });
+
+    if (scene.gif) {
+      return imagePromise.then(async (baseImg) => {
+        const res = await fetch(scene.gif); const buf = await res.arrayBuffer();
+        const gif = parseGIF(buf); const frames = decompressFrames(gif, true);
+        const oc = document.createElement('canvas'), ox = oc.getContext('2d');
+        oc.width = gif.lsd.width; oc.height = gif.lsd.height;
+        const outFrames = [], delays = [];
+        frames.forEach(f => { ox.clearRect(0,0,oc.width,oc.height); ox.drawImage(baseImg,0,0,oc.width,oc.height);
+          const imgData = new ImageData(f.patch, f.dims.width, f.dims.height);
+          ox.putImageData(imgData, f.dims.left, f.dims.top);
+          const c = document.createElement('canvas'); c.width=oc.width; c.height=oc.height; c.getContext('2d').drawImage(oc,0,0);
+          outFrames.push(c); delays.push((f.delay||10)*10);
+        });
+        return ({ img: baseImg, frames: outFrames, delays });
+      });
+    }
+
+    return imagePromise.then(img => ({ img }));
   });
   return Promise.all(promises);
 }
+
+export async function warmPreload(){ try{ preloadedAssets = await preloadCutsceneAssets(); }catch(e){ console.error('Warm preload failed', e); } }
 
 export async function startCutscene(){
   csElement = document.getElementById('cutscene');
@@ -175,7 +241,7 @@ export async function startCutscene(){
   loading.style.display = 'grid';
   
   try {
-    preloadedImages = await preloadCutsceneAssets();
+    preloadedAssets = await preloadCutsceneAssets();
   } catch (error) {
     console.error("Failed to preload cutscene assets:", error);
     loading.style.display = 'none'; // Hide loader on error too
